@@ -13,8 +13,8 @@ plotVol <- function(data, foldchange, p.adj, colors = c('red', 'blue', 'gray')){
       TRUE ~ 'none'
     ))
   plotData$type = factor(plotData$type, levels = c('up', 'down', 'none'))
-  title = paste0('up-regulated', nrow(filter(plotData, type == 'up')), '\n',
-                 'down-regulated', nrow(filter(plotData, type == 'down')), '\n',
+  title = paste0('up-regulated:', nrow(filter(plotData, type == 'up')), '\n',
+                 'down-regulated:', nrow(filter(plotData, type == 'down')), '\n',
                  'Cut-off for foldchange:', foldchange, '\n',
                  'Cut-off for pvalue:', p.adj)
   ggplot(data = plotData, aes(x = log2FoldChange, y = -log10(padj))) + 
