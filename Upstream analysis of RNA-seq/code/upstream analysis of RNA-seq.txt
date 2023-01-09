@@ -1,0 +1,140 @@
+#the following part is upstream analysis of RNA-seq
+
+#path: /share/home/gust/
+#annotation file: /share/home/gust/gencode.v42.annotation.gtf
+#genome fasta file: /share/home/gust/GRCh38.p13.genome.fa
+#data : /share/home/gust/siCtrl/SRR8256804.fastq; /share/home/gust/siNXF1/SRR8256803.fastq
+
+#Downloading annotation file:
+wget -c https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_42/gencode.v42.annotation.gtf.gz
+gunzip ./gencode.v42.annotation.gtf.gz
+#Downloading genome fasta file:
+wget -c https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_42/GRCh38.p13.genome.fa.gz
+gunzip ./GRCh38.p13.genome.fa.gz
+
+########################### Sequencing QC with fastqc and fastp #########################################
+fastqc -o ./ -t 6 -q ./siCtrl/SRR8256804.fastq
+fastp -i ./siCtrl/SRR8256804.fastq -o ./siCtrl/cleaned_SRR8256804.fastq -f 15 
+
+########################### Mapping with STAR ######################################################
+mkdir ./genome_reference_0104
+
+#Build genome index (use job submission system)
+bsub -J STAR-index -q normal -m node01 -n 10 -e error1.log -o out1.log STAR \
+--runThreadN 20 \
+--runMode genomeGenerate \
+--genomeDir ./genome_reference_0104/ \ 
+--genomeFastaFiles GRCh38.p13.genome.fa \
+--sjdbGTFfile gencode.v42.annotation.gtf
+
+#Align RNA-Seq Reads to the genome (use job submission system)
+bsub -J STAR -q normal -m node01 -n 10 -e error2.log -o out2.log STAR \
+--runThreadN 20 \
+--outSAMtype BAM Unsorted SortedByCoordinate \
+--genomeDir ./genome_reference_0104/ \
+--readFilesIn ./siCtrl/cleaned_SRR8256804.fastq \
+--outFileNamePrefix Mapping_RNA-seq_SRR8256804 
+
+bsub -J STAR -q normal -m node01 -n 10 -e error2.log -o out2.log STAR \
+--runThreadN 20 \
+--outSAMtype BAM Unsorted SortedByCoordinate \
+--genomeDir ./genome_reference_0104/ \
+--readFilesIn ./siNXF1/cleaned_SRR8256803.fastq \
+--outFileNamePrefix Mapping_RNA-seq_SRR8256803
+
+#View the mapping results
+cat Mapping_RNA-seq_SRR8256804Log.final.out
+head Mapping_RNA-seq_SRR8256804SJ.out.tab
+
+#Sort the BAM with samtools
+samtools sort -@ 10 -o ./sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam  ./Mapping_RNA-seq_SRR8256804Aligned.out.bam
+samtools sort -@ 10 -o ./sorted_Mapping_RNA-seq_SRR8256803Aligned.out.bam  ./Mapping_RNA-seq_SRR8256803Aligned.out.bam
+#Build index of the BAM with samtools
+samtools index -b sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam
+samtools index -b sorted_Mapping_RNA-seq_SRR8256803Aligned.out.bam
+
+########################## Mapping QC with RSeQC####################################################
+#Convert annotation file format from gtf to bed12
+gtfToGenePred gencode.v42.annotation.gtf gencode.v42.annotation.genePred
+genePredToBed gencode.v42.annotation.genePred gencode.v42.annotation.bed
+
+#Judge whether sequencing is stranded-specific
+infer_experiment.py -r gencode.v42.annotation.bed -i sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam
+infer_experiment.py -r gencode.v42.annotation.bed -i sorted_Mapping_RNA-seq_SRR8256803Aligned.out.bam
+
+#Summarizing mapping statistics (also provide strandness information)
+bam_stat.py -i sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam
+
+#Calculate read distribution
+read_distribution.py -i sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam -r gencode.v42.annotation.bed
+
+#Calculate the RNA-seq reads coverage over gene body
+geneBody_coverage.py -i sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam -r gencode.v42.annotation.bed -o out
+
+#Calculate the distributions of clipped nucleotides across reads
+clipping_profile.py -i sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam -s "SE" -o out
+
+#Calculate the distributions of deletions across reads
+deletion_profile.py -i sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam -o out -l 85
+
+#Calculate the distributions of inserted nucleotides across reads
+insertion_profile.py  -i sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam -o out -s "SE"
+
+#Calculate the junction annotation
+junction_annotation.py -i sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam -o output -r gencode.v42.annotation.bed 
+
+
+########################### Mapping QC with samtools##################################################
+samtools view -@ 10 -b -q 255 sorted_Mapping_RNA-seq_SRR8256804Aligned.out.bam -o filtered_Mapping_RNA-seq_SRR8256804.bam
+samtools view -@ 10 -b -q 255 sorted_Mapping_RNA-seq_SRR8256803Aligned.out.bam -o filtered_Mapping_RNA-seq_SRR8256803.bam
+
+########################### Quant with featureCounts #################################################
+#Download subread
+wget -c https://sourceforge.net/projects/subread/files/subread-2.0.2/subread-2.0.2-Linux-x86_64.tar.gz
+tar zxvf subread-2.0.2-Linux-x86_64.tar.gz
+
+#run featureCounts
+featureCounts \
+-a gencode.v42.annotation.gtf \
+-g gene_id \
+-T 5 \
+-o RNA-seq_SRR8256804_rawCount.txt filtered_Mapping_RNA-seq_SRR8256804.bam
+
+featureCounts \
+-a gencode.v42.annotation.gtf \
+-g gene_id \
+-T 5 \
+-o RNA-seq_SRR8256803_rawCount.txt filtered_Mapping_RNA-seq_SRR8256803.bam
+
+ #view the result
+less RNA-seq_SRR8256804_rawCount.txt
+cat RNA-seq_SRR8256804_rawCount.txt.summary
+less RNA-seq_SRR8256803_rawCount.txt
+cat RNA-seq_SRR8256803_rawCount.txt.summary
+
+
+#Only remain 1st and 7th column of text
+cut -f 1,7 RNA-seq_SRR8256804_rawCount.txt | grep -v ‘^#’ >RNA-seq_SRR8256804_rawCount_cut.txt
+less RNA-seq_SRR8256804_rawCount_cut.txt
+cut -f 1,7 RNA-seq_SRR8256803_rawCount.txt | grep -v ‘^#’ >RNA-seq_SRR8256803_rawCount_cut.txt
+less RNA-seq_SRR8256803_rawCount_cut.txt
+
+#build the expr_matrix
+join RNA-seq_SRR8256804_rawCount_cut.txt RNA-seq_SRR8256803_rawCount_cut.txt > Ctrl-NXF1_rawCount_cut.txt
+less Ctrl-NXF1_rawCount_cut.txt
+
+#############################Convert BAM to bigwig###################################################
+#build index
+samtools index -b filtered_Mapping_RNA-seq_SRR8256804.bam
+samtools index -b filtered_Mapping_RNA-seq_SRR8256803.bam
+
+bamCoverage -b filtered_Mapping_RNA-seq_SRR8256804.bam -o SRR8256804.bw -of bigwig -p 5 -bs=1
+bamCoverage -b filtered_Mapping_RNA-seq_SRR8256803.bam -o SRR8256803.bw -of bigwig -p 5 -bs=1
+
+
+
+
+
+
+
+
